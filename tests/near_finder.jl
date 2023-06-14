@@ -2,6 +2,7 @@ push!(LOAD_PATH, pwd())
 
 using Revise
 using NearFinding
+using DoubleFloats
 using Plots
 
 """
@@ -15,19 +16,27 @@ Parameters:
     f:   frequency - how many lobes are in the star
     rot: angle of rotation
 """
-function star(N; x=0.0, y=0.0, r=1.0, a=0.5, f=3, rot=0.0)
-	println(x, " ", y, " ", r, " ", a, " ", f, " ", rot)
-	t = LinRange(0.0, 2π, N+1)[1:N]
-	c = @. (x+im*y) + r*(1 + a*cos(f*(t-rot)))*exp(im*t)
+function star(	N::Integer,
+				::Type{T}=Float64; 
+				x::T=zero(T),
+				y::T=zero(T),
+				r::T=one(T),
+				a::T=T(1//2),
+				f::Integer=3,
+				rot::T=zero(T)
+			) where T <: Real
+	t = LinRange(zero(T), 2T(π), N+1)[1:N]
+	c = @. (x+im*y) + r*(1 + a*cos(f*(t-rot)))*exp(Complex{T}(im)*t)
 	return real(c), imag(c)
 end
 
-Ng = 1001
-Nb = 1000
-xv = LinRange(-1.3, 1.3, 1001)
-yv = LinRange(-1.3, 1.3, 1001)
-bx, by = star(Nb, a=0.2, f=5)
-d = 0.1
+Ng = 101
+Nb = 100
+T = Float64
+xv = LinRange(T(-1.3), T(1.3), Ng)
+yv = LinRange(T(-1.3), T(1.3), Ng)
+bx, by = star(Nb, T; a=T(0.2), f=5)
+d = T(0.1)
 
 near, gi, closest = gridpoints_near_points(bx, by, xv, yv, d)
 
@@ -36,7 +45,7 @@ heatmap(xv, yv, near)
 in_annulus, r, θ = gridpoints_near_curve(bx, by, xv, yv, d)
 
 plt = heatmap(xv, yv, transpose(r))
-# plot!(bx, by, color="white", legend=false)
+plot!(bx, by, color="white", legend=false)
 
 plt = heatmap(xv, yv, transpose(θ))
-# plot!(bx, by, color="white", legend=false)
+plot!(bx, by, color="white", legend=false)

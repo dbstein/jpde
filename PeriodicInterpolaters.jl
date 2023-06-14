@@ -2,6 +2,8 @@ module PeriodicInterpolaters
 
 using FourierTools
 using StaticArrays
+using GenericFFT
+using Threaded
 
 export PeriodicInterpolater, PeriodicInterpolaterPrecompute
 export DirectPeriodicInterpolate, DirectPeriodicInterpolate!
@@ -37,16 +39,16 @@ Base.display(PIP::PeriodicInterpolaterPrecompute) = show(PIP)
 function PeriodicInterpolaterPrecompute(ε::T, N::Integer) where T <: AbstractFloat
     mod(N, 2) != 0 && error("N must be even.")
     w = 1 + ceil(Int64, log10(1/ε))
-    β = 2.30 * w
+    β = T(2.30) * w
     w2 = ceil(Int64, w/2)
     N2 = N ÷ 2
-    x = LinRange(0, 2π, 2N+1)[1:2N]
-    α = π*w/(2N)
+    x = LinRange(0, 2T(π), 2N+1)[1:2N]
+    α = T(π)*w/(2N)
     iα = 1/α
     ψ = fftshift(@. φ(iα*(x-π), β))
     ψh = fft(ψ)
     ψh = vcat(ψh[1:N2], ψh[end-N2+1:end]) # check these indeces!
-    pk = @. 4π/(N*ψh)
+    pk = @. 4T(π)/(N*ψh)
     return PeriodicInterpolaterPrecompute{T}(ε, iα, β, w2, pk)
 end
 
@@ -85,14 +87,14 @@ end
 function getM(PI::PeriodicInterpolater)
     return size(PI.padf)[1]
 end
-function PeriodicInterpolater(f::AbstractVecOrMat{TT}, ε::T, PIP::PeriodicInterpolaterPrecompute{T}) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}}
+function PeriodicInterpolater(f::AbstractVecOrMat{TT}, PIP::PeriodicInterpolaterPrecompute{T}; ε::T=100eps(T)) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}}
     scalar = typeof(f) <: AbstractVector
     f = to_mat(f)
     fh = fft(f, 2) # which dimension should this go along?
     M = size(fh)[1]
     N = size(fh)[2]
     N2 = N ÷ 2
-    fh_adj = transpose(PIP.pk) .* fh .* (N/(2π))
+    fh_adj = transpose(PIP.pk) .* fh .* (N/(2T(π)))
     pad_fh_adj = zeros(Complex{T}, M, 2N)
     pad_fh_adj[:, 1:N2] =  fh_adj[:, 1:N2]
     pad_fh_adj[:, end-N2+1:end] = fh_adj[:, end-N2+1:end]
@@ -103,8 +105,8 @@ function PeriodicInterpolater(f::AbstractVecOrMat{TT}, ε::T, PIP::PeriodicInter
         return PeriodicInterpolater{T, TT, M}(PIP.iα, PIP.β, PIP.w2, padf, scalar)
     end
 end
-function PeriodicInterpolater(f::AbstractVecOrMat{TT}, ε::T) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}}
-    return PeriodicInterpolater(f, ε, PeriodicInterpolaterPrecompute(ε, getN(f)))
+function PeriodicInterpolater(f::AbstractVecOrMat{TT}; ε::T=100eps(T)) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}}
+    return PeriodicInterpolater(f, PeriodicInterpolaterPrecompute(ε, getN(f)), ε=ε)
 end
 function (PI::PeriodicInterpolater{T, TT, M})(x::AbstractVector{T}) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}, M}
     out = PI.scalar ? Vector{TT}(undef, length(x)) : Matrix{TT}(undef, (M, length(x)))
@@ -123,17 +125,17 @@ end
 Batched Convolution Functions
 """
 
-function convolve_1(x::T, big_y::AbstractMatrix{TT}, iα::T, w2::Integer, β::T, ::Val{M}) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}, M}
+@inline function convolve_1(x::T, big_y::AbstractMatrix{TT}, iα::T, w2::Integer, β::T, ::Val{M}) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}, M}
     N = size(big_y)[2]
-    h = 2π/N
+    h = 2T(π)/N
     out = @SVector zeros(TT, M)
     ind = mod(floor(Int64, x / h), N) + 1
     min_ind = ind - w2 # check these indeces
     max_ind = ind + w2 + 1
-    xm = mod(x, 2π) # maybe slightly fragile --- mod2pi(x) failed at 2π because mod2pi(2π)->2pπ, but ind was 0
+    xm = mod(x, 2T(π)) # maybe slightly fragile --- mod2pi(x) failed at 2π because mod2pi(2π)->2pπ, but ind was 0
     # reinterpret big_y as an array of SArrays
     bigyr = reinterpret(SVector{M, TT}, big_y)
-    @fastmath for j in min_ind:max_ind
+    @fastmath @simd for j in min_ind:max_ind
         z = iα*(xm - j*h)
         @inbounds out += φ(z, β)*bigyr[mod(j, N)+1]
     end
@@ -141,7 +143,7 @@ function convolve_1(x::T, big_y::AbstractMatrix{TT}, iα::T, w2::Integer, β::T,
 end
 function convolve_v!(out::AbstractMatrix{TT}, xs::AbstractVector{T}, big_y::Matrix{TT}, iα::T, w2::Integer, β::T, ::Val{M}) where {T <: AbstractFloat, TT <: Union{T, Complex{T}}, M}
     outr = reinterpret(SVector{M, TT}, out)
-    Threads.@threads for i in eachindex(xs)
+    @threaded for i in eachindex(xs)
         @inbounds outr[i] = convolve_1(xs[i], big_y, iα, w2, β, Val(M))
     end
     return out
@@ -157,8 +159,8 @@ Direct Interpolation Functions
     sz2 = sz ÷ 2
     out = zero(T)
     xx = exp(im*x)
-    ixx = 1.0/xx
-    xh1 = 1.0
+    ixx = T(1)/xx
+    xh1 = T(1)
     xh2 = ixx
     @inbounds for i in 1:sz2
         out += xh1*fh[i] + xh2*fh[sz+1-i]
@@ -172,7 +174,7 @@ function DirectPeriodicInterpolate(x::AbstractVector{T}, fh::Vector{Complex{T}})
     return DirectPeriodicInterpolate!(out, x, fh)
 end
 function DirectPeriodicInterpolate!(out::AbstractVector{Complex{T}}, x::AbstractVector{T}, fh::Vector{Complex{T}}) where T <: AbstractFloat
-    Threads.@threads for i in eachindex(x, out)
+    @threaded for i in eachindex(x, out)
         @inbounds out[i] = DirectPeriodicInterpolate(x[i], fh)
     end
     return out

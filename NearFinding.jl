@@ -2,6 +2,7 @@ module NearFinding
 
 using FourierTools
 using PeriodicInterpolaters
+using Threaded
 
 export gridpoints_near_points, gridpoints_near_points!, gridpoints_near_curve
 
@@ -28,24 +29,24 @@ Inputs (for T an AbstractFloat):
     yv: T(ny): y-values for grid coordinates
     d:  distance to find near points
 Outputs:
-    close,     bool(nx, ny),  is this point within d of any boundary point?
-    guess_ind, int(nx, ny),   index of closest boundary point to this point
-    closest,   float(nx, ny), closest distance to a boundary point
+    is_close,     Bool(nx, ny),  is this point within d of any boundary point?
+    closest_ind,  Int64(nx, ny), index of closest boundary point to this point
+    closest_d2,   T(nx, ny),     closest squared distance to a boundary point
 """
 function gridpoints_near_points(bx::AbstractVector{T}, by::AbstractVector{T}, xv::AbstractVector{T}, yv::AbstractVector{T}, d::T) where T <: AbstractFloat
     Nx = length(xv)
     Ny = length(yv)
 
     # allocate storage arrays
-    close = zeros(Bool, Nx, Ny)
-    guess_ind = fill(Int64(-1), Nx, Ny)
-    closest = fill(T(1e15), Nx, Ny)
+    is_close    = zeros(Bool,     Nx, Ny)
+    closest_ind = fill(Int64(-1), Nx, Ny)
+    closest_d2  = fill(T(1e15),   Nx, Ny)
 
-    gridpoints_near_points!(close, guess_ind, closest, bx, by, xv, yv, d)
-    return close, guess_ind, closest
+    gridpoints_near_points!(is_close, closest_ind, closest_d2, bx, by, xv, yv, d)
+    return is_close, closest_ind, closest_d2
 end
 
-function gridpoints_near_points!(close::AbstractMatrix{Bool}, guess_ind::AbstractMatrix{Int64}, closest::AbstractMatrix{T}, bx::AbstractVector{T}, by::AbstractVector{T}, xv::AbstractVector{T}, yv::AbstractVector{T}, d::T) where T <: AbstractFloat
+function gridpoints_near_points!(is_close::AbstractMatrix{Bool}, closest_ind::AbstractMatrix{Int64}, closest_d2::AbstractMatrix{T}, bx::AbstractVector{T}, by::AbstractVector{T}, xv::AbstractVector{T}, yv::AbstractVector{T}, d::T) where T <: AbstractFloat
     Nx = length(xv)
     Ny = length(yv)
 
@@ -79,18 +80,18 @@ function gridpoints_near_points!(close::AbstractMatrix{Bool}, guess_ind::Abstrac
                 yd = yv[k] - by[i]
                 dist2 = xd^2 + yd^2
                 # if we're close, mark that we are
-                close[j, k] = close[j, k] || (dist2 < d2)
+                is_close[j, k] = is_close[j, k] || (dist2 < d2)
                 # if we're closest so far, mark that we are
-                closer = close[j, k] && (dist2 < closest[j, k])
-                closest[j, k] = closer ? dist2 : closest[j, k]
-                guess_ind[j, k] = closer ? i : guess_ind[j, k]
+                closer = is_close[j, k] && (dist2 < closest_d2[j, k])
+                closest_d2[j, k] = closer ? dist2 : closest_d2[j, k]
+                closest_ind[j, k] = closer ? i : closest_ind[j, k]
             end
         end
     end
     )
-    @. closest = ifelse(closest > 1e14, NaN, closest)
+    @. closest_d2 = ifelse(closest_d2 > T(1e14), T(NaN), closest_d2)
     # closest[closest .> 1e14] .= NaN
-    return close, guess_ind, closest
+    return is_close, closest_ind, closest_d2
 end
 
 """
@@ -100,7 +101,7 @@ the final point is assumed to be not repeated
 """
 function compute_speed(x::AbstractVector{T}, y::AbstractVector{T}) where T <: AbstractFloat
     n = length(x)
-    ik = im*rfftfreq(n, n)
+    ik = Complex{T}(im)*rfftfreq(n, T(n))
     xp = irfft(ik.*rfft(x), n)
     yp = irfft(ik.*rfft(y), n)
     return hypot.(xp, yp)
@@ -121,7 +122,7 @@ Returns:
 function upsample_curve(cx::AbstractVector{T}, cy::AbstractVector{T}, d::T) where T <: AbstractFloat
     # compute the speed of the approximation
     n = length(cx)
-    dt = 2π/n
+    dt = 2T(π)/n
     speed = compute_speed(cx, cy)
     max_h = maximum(speed)*dt
     # if the curve is too poorly resolved to compute things accurate, upsample
@@ -131,7 +132,7 @@ function upsample_curve(cx::AbstractVector{T}, cy::AbstractVector{T}, d::T) wher
         cy = resample(cy, n)
     end
     # extra large fudge factor for near search because its a curve
-    D = 1.5*d
+    D = T(1.5)*d
     return cx, cy, D
 end
 
@@ -159,7 +160,7 @@ Outputs: (tuple of)
     t,          float(nx, ny), t-coordinate for points in_annulus
     (d, cx, cy) float,         search distance, upsampled cx, cy
 """
-function gridpoints_near_curve(cx::AbstractVector{T}, cy::AbstractVector{T}, xv::AbstractVector{T}, yv::AbstractVector{T}, d::T; ε::T=100*eps(T)) where T <: AbstractFloat
+function gridpoints_near_curve(cx::AbstractVector{T}, cy::AbstractVector{T}, xv::AbstractVector{T}, yv::AbstractVector{T}, d::T; ε::T=100eps(T)) where T <: AbstractFloat
     # upsample if needed and get search distance
     cx, cy, D = upsample_curve(cx, cy, d)
     # get points near points
@@ -175,13 +176,13 @@ function gridpoints_near_curve(cx::AbstractVector{T}, cy::AbstractVector{T}, xv:
     inds = findall(near)
     if length(inds) > 0
         LCP = LocalCoordinatePrecompute(cx, cy)
-        Threads.@threads for ind in inds
-            @inbounds gt = 2π*(guess_ind[ind]-1)/length(cx)
+        @threaded for ind in inds
+            @inbounds gt = 2T(π)*(guess_ind[ind]-1)/length(cx)
             @inbounds θh, rh = compute_local_coordinates(xv[ind[1]], yv[ind[2]], LCP, gt, ε=ε)
             if abs(rh) <= d
                 @inbounds in_annulus[ind] = true
                 @inbounds r[ind] = rh
-                @inbounds θ[ind] = mod(θh, 2π)
+                @inbounds θ[ind] = mod(θh, 2T(π))
             end
         end
     end
@@ -191,12 +192,12 @@ end
 struct LocalCoordinatePrecompute{T}
     I::PeriodicInterpolater{T, T, 6}
 end
-function LocalCoordinatePrecompute(cx::AbstractVector{T}, cy::AbstractVector{T}; ε::T=100*eps(T)) where T <: AbstractFloat
+function LocalCoordinatePrecompute(cx::AbstractVector{T}, cy::AbstractVector{T}; ε::T=100eps(T)) where T <: AbstractFloat
     n = length(cx)
     # fourier stuff
-    dt = 2π/n
+    dt = 2T(π)/n
     ts = Vector(1:n-1)*dt
-    ik = im*rfftfreq(n, n)
+    ik = Complex{T}(im)*rfftfreq(n, T(n))
     xh = rfft(cx)
     yh = rfft(cy)
     # derivatives
@@ -206,7 +207,7 @@ function LocalCoordinatePrecompute(cx::AbstractVector{T}, cy::AbstractVector{T};
     ypp = irfft(ik.^2 .* yh, n)
     # interpolation operators
     A = Array(transpose(hcat(cx, cy, xp, yp, xpp, ypp)));
-    I = PeriodicInterpolater(A, ε)
+    I = PeriodicInterpolater(A; ε=ε)
     return LocalCoordinatePrecompute{T}(I)
 end
 
@@ -250,7 +251,7 @@ Find using the coordinates:
 x = X + r n_x
 y = Y + r n_y
 """
-function compute_local_coordinates(x::T, y::T, LCP::LocalCoordinatePrecompute{T}, guess_t::T; ε::T=100*eps(T)) where T <: AbstractFloat
+function compute_local_coordinates(x::T, y::T, LCP::LocalCoordinatePrecompute{T}, guess_t::T; ε::T=100eps(T)) where T <: AbstractFloat
     t = SimpleNewton(t -> coord_obj_jac(t, x, y, LCP), guess_t, ε)
     X, Y, Xp, Yp, Xpp, Ypp = coord_interp(t, LCP)
     # compute r
