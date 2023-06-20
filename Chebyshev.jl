@@ -63,7 +63,26 @@ end
 ################################################################################
 # Derivative Matrices
 
+const _allowable = (:nodal, :coefficient)
+@inline _check(x::Symbol) = x in _allowable
+
+"""
+Given a Chebyhsev operat OP which acts from OPIN --> OPOUT,
+    create a new Chebyshev operator acting from REQIN --> REQOUT
+
+For example, if OP acts from nodes --> nodes, then:
+    NOP = toggle_modes(OP, :nodal, :nodal, :coefficient, :nodal)
+returns a new operator NOP that acts from coefficients --> nodes
+
+Any combination of OPIN, OPOUT, REQIN, and REQOUT are allowed,
+    but each must be :nodal or :coefficient
+"""
 function toggle_modes(OP::Matrix{T}, OPIN, OPOUT, REQIN, REQOUT) where T <: AbstractFloat
+    @assert _check(OPIN)
+    @assert _check(OPOUT)
+    @assert _check(REQIN)
+    @assert _check(REQOUT)
+    @assert OPIN in (:nodal, :coefficient)
     if OPIN == :coefficient && REQIN == :nodal
         OP = OP*InverseVandermondeMatrix(size(OP)[2], T)
     elseif OPIN == :nodal && REQIN == :coefficient

@@ -327,7 +327,7 @@ function (AMHS::AnnularModifiedHelmholtzSolver{T})(
                 ob::T=zero(T),
                 atol::T=100eps(T),
                 rtol::T=100eps(T),
-                verbose::Bool=true
+                verbose::Bool=false
         ) where T <: AbstractFloat
     AAG = AMHS.AAG
     CO = AAG.CO
@@ -341,7 +341,7 @@ function (AMHS::AnnularModifiedHelmholtzSolver{T})(
         )
     P = MyPreconditioner(AMHS.KINVS, AAG.M, AAG.n)
     LP = LinearProblem(F, vec(ffh))
-    out = solve(LP, KrylovJL_GMRES(), Pr=P, abstol=atol, reltol=rtol, verbose=true)
+    out = solve(LP, KrylovJL_GMRES(), Pr=P, abstol=atol, reltol=rtol, verbose=verbose)
     uh = reshape(AMHS.AAG, out.u)
     return real.(ifft(uh, 2))
 end

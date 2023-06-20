@@ -9,7 +9,7 @@ using DoubleFloats
 Nb = 200
 M = 16
 T = Float64
-helmholtz_k = one(T)
+helmholtz_k = one(3//10)
 bx, by = star(Nb, T; a=T(2//10), f=5);
 
 AAG = ApproximateAnnularGeometry( Nb, M, T(1//10), one(T) );
